@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "author": "vitals",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "board-ssd1306", "id": "oled", "top": -120, "left": 0, "attrs": { "i2cAddress": "0x3c" } },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 200, "left": -100, "attrs": {} },
+    { "type": "wokwi-potentiometer", "id": "pot2", "top": 200, "left": 0, "attrs": {} },
+    { "type": "wokwi-potentiometer", "id": "pot3", "top": 200, "left": 100, "attrs": {} }
+  ],
+  "connections": [
+    [ "oled:SDA", "esp:21", "green", [] ],
+    [ "oled:SCL", "esp:22", "blue", [] ],
+    [ "oled:VCC", "esp:3V3", "red", [] ],
+    [ "oled:GND", "esp:GND.1", "black", [] ],
+    [ "pot1:SIG", "esp:34", "green", [] ],
+    [ "pot2:SIG", "esp:35", "green", [] ],
+    [ "pot3:SIG", "esp:32", "green", [] ],
+    [ "pot1:VCC", "esp:3V3", "red", [] ],
+    [ "pot2:VCC", "esp:3V3", "red", [] ],
+    [ "pot3:VCC", "esp:3V3", "red", [] ],
+    [ "pot1:GND", "esp:GND.1", "black", [] ],
+    [ "pot2:GND", "esp:GND.1", "black", [] ],
+    [ "pot3:GND", "esp:GND.1", "black", [] ]
+  ]
+}
