@@ -1,5 +1,12 @@
 # Sensor de Sinais Vitais com ESP32
 
+> **Qual código usar?**
+> - Placa física integrada ao VitalSense (app + backend no Render):
+>   [`Projeto com chips/hardware_real/`](Projeto%20com%20chips/hardware_real/README.md)
+> - Simulação no Wokwi com chips personalizados: [`Projeto com chips/`](Projeto%20com%20chips/README.md)
+> - `src/main.cpp` (abaixo) é a primeira versão, com API local apenas; tem o bug
+>   do BPM corrigido nas versões acima.
+
 Firmware para `ESP32 DevKit` com `MAX30102`, `MAX30205` e OLED `SSD1306 0.96"` via I2C. O ESP32 lê batimento, estimativa de SpO2 e temperatura, mostra no display e expõe uma API HTTP local.
 
 > Este projeto é educacional/prototipagem. A estimativa de SpO2 e batimentos com módulos de baixo custo exige calibração, boa fixação do dedo e validação contra equipamento confiável. Não use como dispositivo médico.

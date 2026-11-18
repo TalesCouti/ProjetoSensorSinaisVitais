@@ -40,20 +40,26 @@
 // Exemplo: "https://vitalsense-api.onrender.com/api/v1"
 #define API_BASE_URL ""
 
-// [PREENCHER] Token gerado ao cadastrar o ESP32 no backend (POST /api/v1/devices).
-// É o "apiToken" da resposta. Ele aparece uma única vez.
+// [PREENCHER] Use UM dos dois:
+//   a) o valor de ESP32_DEVICE_TOKEN do Render (o ESP32 se registra sozinho e
+//      você vincula no app pelo DEVICE_ID); ou
+//   b) o token individual mostrado pelo app ao vincular o ESP32.
+// Projetos do Wokwi podem ser vistos por quem tem o link: não deixe um token
+// real num projeto público.
 #define API_TOKEN ""
 
-#define FIRMWARE_VERSION "1.1.0-wokwi"
+#define FIRMWARE_VERSION "1.3.0-wokwi"
 #define I2C_SDA_PIN 21
 #define I2C_SCL_PIN 22
 #define MAX30205_ADDRESS 0x48
 #define OLED_ADDRESS 0x3C
 #define FINGER_IR_THRESHOLD 20000
 
-// Envio automático fora das medições (também mostra o ESP32 como "conectado").
-#define API_PUSH_INTERVAL_MS 60000
-// Envio durante uma medição iniciada pelo app.
+// Heartbeat (status) fora das medições. Leituras só são enviadas durante uma
+// coleta pedida pelo app (o backend descarta leituras fora de coleta).
+#define API_PUSH_INTERVAL_MS 30000
+// Durante uma medição iniciada pelo app: guarda uma amostra a cada 2 s e
+// envia todas juntas (lote) no fim, para o HTTPS não interromper o sensor.
 #define MEASUREMENT_PUSH_INTERVAL_MS 2000
 #endif
 
@@ -103,6 +109,24 @@ struct MeasurementState {
 };
 
 MeasurementState measurement;
+
+// Amostras guardadas durante a medição. Cada envio HTTPS trava o loop por
+// alguns segundos (no Wokwi, ~8 s), e com o loop parado o MAX30102 não é
+// lido: sem amostras seguidas não há como calcular BPM nem SpO2. Por isso a
+// medição roda sem rede e o lote vai ao backend só no fim.
+struct Snapshot {
+  float heartRateBpm;
+  float spo2Pct;
+  float bodyTempC;
+  bool fingerDetected;
+  uint32_t takenAtMs;
+  uint32_t max30102Samples;
+  uint32_t lastBeatAgeMs;
+};
+
+static constexpr uint8_t MAX_SNAPSHOTS = 60;  // backend aceita até 120 por lote
+Snapshot snapshots[MAX_SNAPSHOTS];
+uint8_t snapshotCount = 0;
 
 float bpmBuffer[8];
 uint8_t bpmBufferIndex = 0;
@@ -328,6 +352,9 @@ String buildVitalsJson(const String &sessionId) {
   String payload = "{";
   payload += "\"deviceId\":" + jsonString(DEVICE_ID) + ",";
   payload += "\"firmwareVersion\":" + jsonString(FIRMWARE_VERSION) + ",";
+  // Origem dos dados: o app e o banco mostram que são valores da SIMULAÇÃO (chips do Wokwi).
+  payload += "\"dataSource\":\"simulation\",";
+  payload += "\"boardModel\":\"Wokwi ESP32 DevKitC V4\",";
   if (sessionId.length() > 0) {
     payload += "\"sessionId\":" + jsonString(sessionId) + ",";
   }
@@ -384,6 +411,8 @@ int apiRequest(const char *method, const String &path, const String &body, Strin
   }
 
   http.addHeader("Authorization", String("Bearer ") + API_TOKEN);
+  // Obrigatório quando API_TOKEN é o ESP32_DEVICE_TOKEN (token de provisionamento).
+  http.addHeader("X-Device-Id", DEVICE_ID);
   if (body.length() > 0) {
     http.addHeader("Content-Type", "application/json");
   }
@@ -398,9 +427,53 @@ int apiRequest(const char *method, const String &path, const String &body, Strin
   return code;
 }
 
-int sendReading(const String &sessionId) {
-  int code = apiRequest("POST", "/device/readings", buildVitalsJson(sessionId), nullptr);
-  Serial.printf("[api] leitura enviada%s -> HTTP %d\n", sessionId.length() ? " (medicao)" : "", code);
+// Guarda os valores atuais (sem rede).
+void takeSnapshot() {
+  if (snapshotCount >= MAX_SNAPSHOTS) {
+    return;
+  }
+  uint32_t now = millis();
+  Snapshot &s = snapshots[snapshotCount++];
+  s.heartRateBpm = vitals.heartRateBpm;
+  s.spo2Pct = vitals.spo2Pct;
+  s.bodyTempC = vitals.bodyTempC;
+  s.fingerDetected = vitals.fingerDetected;
+  s.takenAtMs = now;
+  s.max30102Samples = vitals.max30102Samples;
+  s.lastBeatAgeMs = vitals.lastBeatMs == 0 ? 0 : now - vitals.lastBeatMs;
+  Serial.printf("[medicao] amostra %u: BPM=%s SpO2=%s T=%s dedo=%s\n", snapshotCount,
+                jsonFloat(s.heartRateBpm, 1).c_str(), jsonFloat(s.spo2Pct, 1).c_str(),
+                jsonFloat(s.bodyTempC, 2).c_str(), s.fingerDetected ? "sim" : "nao");
+}
+
+// Envia todas as amostras num único POST /device/readings (formato de lote).
+// ageMs = há quanto tempo cada amostra foi medida: o backend recalcula o horário.
+int sendSnapshotBatch(const String &sessionId) {
+  uint32_t now = millis();
+  String body;
+  body.reserve(200 + snapshotCount * 190);
+  body = "{\"sessionId\":" + jsonString(sessionId) + ",";
+  body += "\"deviceId\":" + jsonString(DEVICE_ID) + ",";
+  body += "\"firmwareVersion\":" + jsonString(FIRMWARE_VERSION) + ",";
+  body += "\"dataSource\":\"simulation\",";
+  body += "\"boardModel\":\"Wokwi ESP32 DevKitC V4\",";
+  body += "\"readings\":[";
+  for (uint8_t i = 0; i < snapshotCount; i++) {
+    const Snapshot &s = snapshots[i];
+    if (i > 0) body += ",";
+    body += "{\"heartRateBpm\":" + jsonFloat(s.heartRateBpm, 1);
+    body += ",\"spo2Pct\":" + jsonFloat(s.spo2Pct, 1);
+    body += ",\"bodyTempC\":" + jsonFloat(s.bodyTempC, 2);
+    body += ",\"fingerDetected\":" + String(s.fingerDetected ? "true" : "false");
+    body += ",\"ageMs\":" + String(now - s.takenAtMs);
+    body += ",\"uptimeMs\":" + String(s.takenAtMs);
+    body += ",\"quality\":{\"max30102Samples\":" + String(s.max30102Samples);
+    body += ",\"lastBeatAgeMs\":" + String(s.lastBeatAgeMs) + "}}";
+  }
+  body += "]}";
+
+  int code = apiRequest("POST", "/device/readings", body, nullptr);
+  Serial.printf("[api] lote com %u amostra(s) -> HTTP %d\n", snapshotCount, code);
   return code;
 }
 
@@ -408,16 +481,28 @@ void startMeasurement(const String &sessionId, uint32_t durationSeconds) {
   measurement.active = true;
   measurement.sessionId = sessionId;
   measurement.endMs = millis() + durationSeconds * 1000UL;
-  lastMeasurementPushMs = 0;
-  Serial.printf("[medicao] Iniciada pelo app: %s (%lu s)\n", sessionId.c_str(), (unsigned long)durationSeconds);
+  lastMeasurementPushMs = millis();  // primeira amostra depois de 2 s, com o sensor já estabilizado
+  snapshotCount = 0;
+  Serial.printf("[medicao] Iniciada pelo app: %s (%lu s). Medindo sem rede...\n", sessionId.c_str(),
+                (unsigned long)durationSeconds);
 }
 
 void finishMeasurement() {
-  sendReading(measurement.sessionId);  // última leitura antes de encerrar
+  takeSnapshot();  // última amostra antes de encerrar
 
-  String body = "{\"status\":\"completed\"}";
+  int batchCode = 0;
+  if (snapshotCount > 0) {
+    batchCode = sendSnapshotBatch(measurement.sessionId);
+    if (batchCode < 200 || batchCode >= 300) {
+      batchCode = sendSnapshotBatch(measurement.sessionId);  // segunda tentativa (rede/Render lentos)
+    }
+  }
+  bool batchOk = batchCode >= 200 && batchCode < 300;
+
+  String body = batchOk ? "{\"status\":\"completed\"}"
+                        : "{\"status\":\"failed\",\"reason\":\"Falha ao enviar as leituras ao backend.\"}";
   int code = apiRequest("POST", "/device/measurements/" + measurement.sessionId + "/complete", body, nullptr);
-  Serial.printf("[medicao] Concluida -> HTTP %d\n", code);
+  Serial.printf("[medicao] %s -> HTTP %d\n", batchOk ? "Concluida" : "Falhou (lote nao enviado)", code);
 
   measurement.active = false;
   measurement.sessionId = "";
@@ -459,8 +544,8 @@ void pollMeasurementCommand() {
   }
 }
 
-// Durante a medição: envia leituras a cada MEASUREMENT_PUSH_INTERVAL_MS e
-// encerra quando o tempo acabar. Fora dela: envio periódico de manutenção.
+// Durante a medição: só guarda amostras (sem rede) e, quando o tempo acaba,
+// envia o lote e encerra. Fora dela: heartbeat periódico de manutenção.
 void pushToRemoteApi() {
   if (!apiConfigured()) {
     return;
@@ -473,17 +558,28 @@ void pushToRemoteApi() {
       finishMeasurement();
       return;
     }
-    if (lastMeasurementPushMs == 0 || now - lastMeasurementPushMs >= MEASUREMENT_PUSH_INTERVAL_MS) {
+    if (now - lastMeasurementPushMs >= MEASUREMENT_PUSH_INTERVAL_MS) {
       lastMeasurementPushMs = now;
-      sendReading(measurement.sessionId);
+      takeSnapshot();
     }
     return;
   }
 
   if (now - lastPushMs >= API_PUSH_INTERVAL_MS) {
     lastPushMs = now;
-    sendReading("");
+    int code = apiRequest("POST", "/device/heartbeat", buildVitalsJson(""), nullptr);
+    Serial.printf("[api] heartbeat -> HTTP %d\n", code);
   }
+}
+
+// Avisa o backend que o ESP32 ligou (versão, sensores e origem "simulation").
+void registerDevice() {
+  if (!apiConfigured()) {
+    return;
+  }
+  int code = apiRequest("POST", "/device/register", buildVitalsJson(""), nullptr);
+  Serial.printf("[api] register -> HTTP %d\n", code);
+  lastPushMs = millis();
 }
 
 // -----------------------------------------------------------------------------
@@ -678,7 +774,8 @@ void setup() {
   if (apiConfigured()) {
     Serial.print("Backend: ");
     Serial.println(API_BASE_URL);
-    Serial.println("Aguardando o botao Iniciar do app...");
+    registerDevice();
+    Serial.println("Aguardando o botao Sincronizar/Iniciar do app...");
   } else {
     Serial.println("Backend NAO configurado: preencha API_BASE_URL e API_TOKEN.");
   }

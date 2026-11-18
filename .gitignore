@@ -5,3 +5,10 @@ include/config.h
 *.elf
 *.map
 
+
+# Configuração local do firmware (Wi-Fi, token): nunca enviar ao Git
+**/config.h
+
+# Cópias locais com token/Wi-Fi reais (nunca versionar)
+*_pronto.ino
+PROJETO PARA COLOCAR NO ESP32 FISICOO/

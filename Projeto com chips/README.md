@@ -1,5 +1,15 @@
 # Projeto com chips (simulação no Wokwi)
 
+> 🔧 **Vai gravar na placa de verdade?** Use a versão para hardware real em
+> [`hardware_real/`](hardware_real/README.md) (`hardware_real/VitalSenseESP32/VitalSenseESP32.ino`).
+> Os arquivos desta pasta continuam sendo a simulação do Wokwi.
+>
+> **Atualização 1.2.0-wokwi:** o sketch agora se registra no backend
+> (`POST /device/register`), manda heartbeat a cada 30 s em vez de leituras "de
+> fundo", envia o cabeçalho `X-Device-Id` (necessário com o token de
+> provisionamento `ESP32_DEVICE_TOKEN`) e marca os dados como
+> `dataSource: "simulation"` — o app mostra o selo "Simulação (Wokwi)".
+
 Versão do firmware para rodar no **[Wokwi](https://wokwi.com)** com os sensores
 **MAX30102** (batimentos e SpO2) e **MAX30205** (temperatura corporal)
 simulados por **chips personalizados** (*custom chips*), já que o Wokwi não tem
